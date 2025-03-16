@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR Code WhatsApp</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #f0f2f5;
+        }
+        .container {
+            background-color: white;
+            padding: 2rem;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        h1 {
+            color: #128C7E;
+            margin-bottom: 1rem;
+        }
+        #qrcode {
+            margin: 1rem 0;
+            padding: 1rem;
+            background-color: white;
+            border-radius: 5px;
+            min-height: 256px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #qrcode img {
+            max-width: 100%;
+            height: auto;
+        }
+        .status {
+            color: #666;
+            margin-top: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>WhatsApp QR Code</h1>
+        <div id="qrcode"></div>
+        <div class="status" id="status">Aguardando QR Code...</div>
+    </div>
+    <script>
+        let lastQRCode = null;
+        const qrcodeElement = document.getElementById('qrcode');
+        const statusElement = document.getElementById('status');
+
+        // Obtém o endereço do servidor atual
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.hostname}${window.location.port ? ':' + window.location.port : ''}`;
+        
+        // Conecta ao servidor WebSocket
+        const ws = new WebSocket(wsUrl);
+
+        ws.onopen = function() {
+            console.log('Conexão WebSocket estabelecida');
+            statusElement.textContent = 'Conectado ao servidor. Aguardando QR Code...';
+        };
+
+        ws.onmessage = function(event) {
+            try {
+                const data = JSON.parse(event.data);
+                console.log('Mensagem recebida:', data.type);
+                
+                if (data.type === 'qr') {
+                    // Evita gerar o mesmo QR code múltiplas vezes
+                    if (lastQRCode === data.qr) {
+                        return;
+                    }
+                    lastQRCode = data.qr;
+
+                    // Limpa o QR code anterior
+                    qrcodeElement.innerHTML = '';
+                    
+                    // Cria e exibe a imagem do QR code
+                    const img = new Image();
+                    img.src = data.qr;
+                    qrcodeElement.appendChild(img);
+                    
+                    statusElement.textContent = 'Escaneie o QR Code com seu WhatsApp';
+                } else if (data.type === 'ready') {
+                    statusElement.textContent = 'WhatsApp conectado!';
+                    qrcodeElement.style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Erro ao processar mensagem:', error);
+                statusElement.textContent = 'Erro ao processar mensagem do servidor';
+            }
+        };
+
+        ws.onerror = function(error) {
+            console.error('Erro na conexão WebSocket:', error);
+            statusElement.textContent = 'Erro na conexão. Verifique se o servidor está rodando.';
+        };
+
+        ws.onclose = function() {
+            console.log('Conexão WebSocket fechada');
+            statusElement.textContent = 'Conexão fechada. Recarregue a página para reconectar.';
+        };
+    </script>
+</body>
+</html> 
