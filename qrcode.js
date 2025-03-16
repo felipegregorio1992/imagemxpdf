@@ -6,6 +6,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const express = require('express');
 const app = express();
+const chromium = require('chrome-aws-lambda');
 
 // Configuração da porta - usa a porta do ambiente ou 3001 como fallback
 const port = process.env.PORT || 3001;
@@ -44,41 +45,130 @@ app.get('/api/status', (req, res) => {
     }
 });
 
-// Inicializa o cliente do WhatsApp com opções adicionais
-const client = new Client({
-    puppeteer: {
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--disable-gpu'
-        ],
-        headless: true
+// Função para obter as opções do puppeteer baseado no ambiente
+async function getPuppeteerOptions() {
+    if (process.env.NODE_ENV === 'production') {
+        return {
+            puppeteer: {
+                executablePath: await chromium.executablePath,
+                args: [
+                    ...chromium.args,
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                ],
+                defaultViewport: chromium.defaultViewport,
+                headless: chromium.headless,
+            }
+        };
+    } else {
+        return {
+            puppeteer: {
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--disable-gpu'
+                ],
+                headless: true
+            }
+        };
     }
-});
+}
 
-// Gera o QR Code para autenticação
-client.on('qr', async (qr) => {
-    console.log('QR Code gerado. Escaneie-o com seu WhatsApp:');
-    
+// Inicializa o cliente do WhatsApp
+async function initializeWhatsApp() {
     try {
-        // Gera o QR code como uma string de dados URL
-        lastQRCode = await qrcode.toDataURL(qr);
-        console.log('QR Code atualizado');
-    } catch (error) {
-        console.error('Erro ao gerar QR code:', error);
-    }
-});
+        const options = await getPuppeteerOptions();
+        const client = new Client(options);
 
-// Quando o cliente estiver pronto
-client.on('ready', () => {
-    console.log('Cliente WhatsApp conectado!');
-    isWhatsAppReady = true;
-    lastQRCode = null;
-});
+        // Gera o QR Code para autenticação
+        client.on('qr', async (qr) => {
+            console.log('QR Code gerado. Escaneie-o com seu WhatsApp:');
+            
+            try {
+                // Gera o QR code como uma string de dados URL
+                lastQRCode = await qrcode.toDataURL(qr);
+                console.log('QR Code atualizado');
+            } catch (error) {
+                console.error('Erro ao gerar QR code:', error);
+            }
+        });
+
+        // Quando o cliente estiver pronto
+        client.on('ready', () => {
+            console.log('Cliente WhatsApp conectado!');
+            isWhatsAppReady = true;
+            lastQRCode = null;
+        });
+
+        // Manipula as mensagens recebidas
+        client.on('message', async (message) => {
+            let tempFilePath = null;
+            
+            try {
+                // Verifica se a mensagem contém mídia e é uma imagem
+                if (message.hasMedia) {
+                    const media = await message.downloadMedia();
+                    
+                    if (!media || !media.data) {
+                        throw new Error('Dados da mídia não encontrados');
+                    }
+
+                    if (!media.mimetype.startsWith('image/')) {
+                        await message.reply('Por favor, envie apenas imagens.');
+                        return;
+                    }
+
+                    await message.reply('Processando sua imagem... 🔄');
+
+                    // Converte o base64 da imagem em buffer
+                    const imageBuffer = Buffer.from(media.data, 'base64');
+                    
+                    console.log('Convertendo imagem para PDF...');
+                    
+                    // Converte a imagem para PDF
+                    const pdfBuffer = await convertImageToPDF(imageBuffer);
+                    
+                    // Salva o PDF temporariamente
+                    tempFilePath = await saveTempFile(pdfBuffer, '.pdf');
+                    
+                    // Lê o arquivo como base64
+                    const pdfBase64 = (await fs.readFile(tempFilePath)).toString('base64');
+
+                    // Cria o arquivo de mídia para enviar
+                    const pdfMedia = new MessageMedia(
+                        'application/pdf',
+                        pdfBase64,
+                        'documento.pdf'
+                    );
+
+                    // Envia o PDF de volta para o usuário
+                    await message.reply(pdfMedia);
+                    await message.reply('Aqui está seu PDF! 📄');
+                }
+            } catch (error) {
+                console.error('Erro ao processar mensagem:', error);
+                await message.reply('Desculpe, ocorreu um erro ao processar sua imagem. Por favor, tente enviar novamente.');
+            } finally {
+                // Limpa o arquivo temporário se ele existir
+                if (tempFilePath) {
+                    await cleanupTempFile(tempFilePath);
+                }
+            }
+        });
+
+        // Inicia o cliente
+        await client.initialize();
+        
+        return client;
+    } catch (error) {
+        console.error('Erro ao inicializar WhatsApp:', error);
+        throw error;
+    }
+}
 
 // Função para validar base64
 function isValidBase64(str) {
@@ -151,62 +241,6 @@ async function cleanupTempFile(filePath) {
     }
 }
 
-// Manipula as mensagens recebidas
-client.on('message', async (message) => {
-    let tempFilePath = null;
-    
-    try {
-        // Verifica se a mensagem contém mídia e é uma imagem
-        if (message.hasMedia) {
-            const media = await message.downloadMedia();
-            
-            if (!media || !media.data) {
-                throw new Error('Dados da mídia não encontrados');
-            }
-
-            if (!media.mimetype.startsWith('image/')) {
-                await message.reply('Por favor, envie apenas imagens.');
-                return;
-            }
-
-            await message.reply('Processando sua imagem... 🔄');
-
-            // Converte o base64 da imagem em buffer
-            const imageBuffer = Buffer.from(media.data, 'base64');
-            
-            console.log('Convertendo imagem para PDF...');
-            
-            // Converte a imagem para PDF
-            const pdfBuffer = await convertImageToPDF(imageBuffer);
-            
-            // Salva o PDF temporariamente
-            tempFilePath = await saveTempFile(pdfBuffer, '.pdf');
-            
-            // Lê o arquivo como base64
-            const pdfBase64 = (await fs.readFile(tempFilePath)).toString('base64');
-
-            // Cria o arquivo de mídia para enviar
-            const pdfMedia = new MessageMedia(
-                'application/pdf',
-                pdfBase64,
-                'documento.pdf'
-            );
-
-            // Envia o PDF de volta para o usuário
-            await message.reply(pdfMedia);
-            await message.reply('Aqui está seu PDF! 📄');
-        }
-    } catch (error) {
-        console.error('Erro ao processar mensagem:', error);
-        await message.reply('Desculpe, ocorreu um erro ao processar sua imagem. Por favor, tente enviar novamente.');
-    } finally {
-        // Limpa o arquivo temporário se ele existir
-        if (tempFilePath) {
-            await cleanupTempFile(tempFilePath);
-        }
-    }
-});
-
 // Inicia o servidor em desenvolvimento
 if (process.env.NODE_ENV !== 'production') {
     app.listen(port, '0.0.0.0', () => {
@@ -214,13 +248,10 @@ if (process.env.NODE_ENV !== 'production') {
     });
 }
 
-// Inicia o cliente do WhatsApp
-if (process.env.NODE_ENV === 'production') {
-    console.log('Iniciando em modo produção...');
-}
-
-client.initialize().catch(err => {
-    console.error('Erro ao inicializar cliente do WhatsApp:', err);
+// Inicia o WhatsApp
+console.log(`Iniciando em modo ${process.env.NODE_ENV || 'desenvolvimento'}...`);
+initializeWhatsApp().catch(err => {
+    console.error('Erro ao inicializar:', err);
 });
 
 // Exporta o app para o Vercel
