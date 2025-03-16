@@ -56,59 +56,43 @@
         let lastQRCode = null;
         const qrcodeElement = document.getElementById('qrcode');
         const statusElement = document.getElementById('status');
+        let isPolling = true;
 
-        // Obtém o endereço do servidor atual
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.hostname}${window.location.port ? ':' + window.location.port : ''}`;
-        
-        // Conecta ao servidor WebSocket
-        const ws = new WebSocket(wsUrl);
+        async function checkStatus() {
+            if (!isPolling) return;
 
-        ws.onopen = function() {
-            console.log('Conexão WebSocket estabelecida');
-            statusElement.textContent = 'Conectado ao servidor. Aguardando QR Code...';
-        };
-
-        ws.onmessage = function(event) {
             try {
-                const data = JSON.parse(event.data);
-                console.log('Mensagem recebida:', data.type);
+                const response = await fetch('/api/status');
+                const data = await response.json();
                 
                 if (data.type === 'qr') {
-                    // Evita gerar o mesmo QR code múltiplas vezes
-                    if (lastQRCode === data.qr) {
-                        return;
+                    if (lastQRCode !== data.qr) {
+                        lastQRCode = data.qr;
+                        qrcodeElement.innerHTML = '';
+                        const img = new Image();
+                        img.src = data.qr;
+                        qrcodeElement.appendChild(img);
+                        statusElement.textContent = 'Escaneie o QR Code com seu WhatsApp';
                     }
-                    lastQRCode = data.qr;
-
-                    // Limpa o QR code anterior
-                    qrcodeElement.innerHTML = '';
-                    
-                    // Cria e exibe a imagem do QR code
-                    const img = new Image();
-                    img.src = data.qr;
-                    qrcodeElement.appendChild(img);
-                    
-                    statusElement.textContent = 'Escaneie o QR Code com seu WhatsApp';
                 } else if (data.type === 'ready') {
                     statusElement.textContent = 'WhatsApp conectado!';
                     qrcodeElement.style.display = 'none';
+                    isPolling = false;
+                    return;
                 }
+                
+                // Continua verificando a cada 2 segundos
+                setTimeout(checkStatus, 2000);
             } catch (error) {
-                console.error('Erro ao processar mensagem:', error);
-                statusElement.textContent = 'Erro ao processar mensagem do servidor';
+                console.error('Erro ao verificar status:', error);
+                statusElement.textContent = 'Erro ao conectar com o servidor';
+                // Tenta novamente após 5 segundos em caso de erro
+                setTimeout(checkStatus, 5000);
             }
-        };
+        }
 
-        ws.onerror = function(error) {
-            console.error('Erro na conexão WebSocket:', error);
-            statusElement.textContent = 'Erro na conexão. Verifique se o servidor está rodando.';
-        };
-
-        ws.onclose = function() {
-            console.log('Conexão WebSocket fechada');
-            statusElement.textContent = 'Conexão fechada. Recarregue a página para reconectar.';
-        };
+        // Inicia a verificação de status
+        checkStatus();
     </script>
 </body>
 </html> 

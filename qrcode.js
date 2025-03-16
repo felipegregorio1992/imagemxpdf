@@ -4,78 +4,33 @@ const { PDFDocument } = require('pdf-lib');
 const sharp = require('sharp');
 const fs = require('fs').promises;
 const path = require('path');
-const WebSocket = require('ws');
 const express = require('express');
 const app = express();
 
 // Configuração da porta - usa a porta do ambiente ou 3001 como fallback
 const port = process.env.PORT || 3001;
 
+// Armazena o último QR code gerado
+let lastQRCode = null;
+let isWhatsAppReady = false;
+
 // Configuração do servidor Express
 app.use(express.static(__dirname));
 
-// Configuração para funcionar atrás de um proxy (comum em hospedagens)
-app.set('trust proxy', 1);
-
-// Criação do servidor HTTP
-const server = app.listen(port, '0.0.0.0', () => {
-    console.log(`Servidor rodando na porta ${port}`);
+// Rota para verificar o status do QR code
+app.get('/api/status', (req, res) => {
+    if (isWhatsAppReady) {
+        res.json({ type: 'ready' });
+    } else if (lastQRCode) {
+        res.json({ 
+            type: 'qr',
+            qr: lastQRCode,
+            timestamp: Date.now()
+        });
+    } else {
+        res.json({ type: 'waiting' });
+    }
 });
-
-// Configuração do WebSocket Server com heartbeat para manter conexões vivas
-const wss = new WebSocket.Server({ server });
-
-// Função para verificar conexões ativas
-function heartbeat() {
-    this.isAlive = true;
-}
-
-// Configuração do WebSocket com ping/pong para manter conexões
-wss.on('connection', (ws) => {
-    ws.isAlive = true;
-    ws.on('pong', heartbeat);
-    
-    clients.add(ws);
-    console.log('Cliente WebSocket conectado');
-
-    ws.on('close', () => {
-        clients.delete(ws);
-        console.log('Cliente WebSocket desconectado');
-    });
-});
-
-// Verificação periódica de conexões ativas
-const interval = setInterval(() => {
-    wss.clients.forEach((ws) => {
-        if (ws.isAlive === false) {
-            clients.delete(ws);
-            return ws.terminate();
-        }
-        ws.isAlive = false;
-        ws.ping(() => {});
-    });
-}, 30000);
-
-wss.on('close', () => {
-    clearInterval(interval);
-});
-
-// Armazena as conexões WebSocket ativas
-const clients = new Set();
-
-// Função para enviar mensagem para todos os clientes conectados
-function broadcast(message) {
-    clients.forEach(client => {
-        if (client.readyState === WebSocket.OPEN) {
-            try {
-                client.send(JSON.stringify(message));
-            } catch (error) {
-                console.error('Erro ao enviar mensagem para cliente:', error);
-                clients.delete(client);
-            }
-        }
-    });
-}
 
 // Inicializa o cliente do WhatsApp com opções adicionais
 const client = new Client({
@@ -99,24 +54,18 @@ client.on('qr', async (qr) => {
     
     try {
         // Gera o QR code como uma string de dados URL
-        const qrDataURL = await qrcode.toDataURL(qr);
-        
-        // Envia o QR code para a página web
-        broadcast({ 
-            type: 'qr', 
-            qr: qrDataURL,
-            timestamp: Date.now()
-        });
-        console.log('QR Code enviado para a página web');
+        lastQRCode = await qrcode.toDataURL(qr);
+        console.log('QR Code atualizado');
     } catch (error) {
-        console.error('Erro ao gerar/enviar QR code:', error);
+        console.error('Erro ao gerar QR code:', error);
     }
 });
 
 // Quando o cliente estiver pronto
 client.on('ready', () => {
     console.log('Cliente WhatsApp conectado!');
-    broadcast({ type: 'ready' });
+    isWhatsAppReady = true;
+    lastQRCode = null;
 });
 
 // Função para validar base64
@@ -246,7 +195,17 @@ client.on('message', async (message) => {
     }
 });
 
+// Inicia o servidor
+if (process.env.NODE_ENV !== 'production') {
+    app.listen(port, '0.0.0.0', () => {
+        console.log(`Servidor rodando na porta ${port}`);
+    });
+}
+
 // Inicia o cliente do WhatsApp
 client.initialize().catch(err => {
     console.error('Erro ao inicializar cliente do WhatsApp:', err);
-}); 
+});
+
+// Exporta o app para o Vercel
+module.exports = app; 
