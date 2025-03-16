@@ -15,7 +15,19 @@ let lastQRCode = null;
 let isWhatsAppReady = false;
 
 // Configuração do servidor Express
-app.use(express.static(__dirname));
+app.use(express.static(path.join(__dirname)));
+
+// Configuração de CORS para a API
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    next();
+});
+
+// Rota de teste para verificar se a API está funcionando
+app.get('/api/test', (req, res) => {
+    res.json({ status: 'API is working' });
+});
 
 // Rota para verificar o status do QR code
 app.get('/api/status', (req, res) => {
@@ -195,7 +207,7 @@ client.on('message', async (message) => {
     }
 });
 
-// Inicia o servidor
+// Inicia o servidor em desenvolvimento
 if (process.env.NODE_ENV !== 'production') {
     app.listen(port, '0.0.0.0', () => {
         console.log(`Servidor rodando na porta ${port}`);
@@ -203,6 +215,10 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 // Inicia o cliente do WhatsApp
+if (process.env.NODE_ENV === 'production') {
+    console.log('Iniciando em modo produção...');
+}
+
 client.initialize().catch(err => {
     console.error('Erro ao inicializar cliente do WhatsApp:', err);
 });
