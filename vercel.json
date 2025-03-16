@@ -23,5 +23,14 @@
             "src": "/(.*)",
             "dest": "/$1"
         }
-    ]
+    ],
+    "env": {
+        "NODE_ENV": "production"
+    },
+    "functions": {
+        "qrcode.js": {
+            "memory": 1024,
+            "maxDuration": 60
+        }
+    }
 } 

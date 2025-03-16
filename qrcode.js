@@ -6,7 +6,6 @@ const fs = require('fs').promises;
 const path = require('path');
 const express = require('express');
 const app = express();
-const chromium = require('chrome-aws-lambda');
 
 // Configuração da porta - usa a porta do ambiente ou 3001 como fallback
 const port = process.env.PORT || 3001;
@@ -14,6 +13,7 @@ const port = process.env.PORT || 3001;
 // Armazena o último QR code gerado
 let lastQRCode = null;
 let isWhatsAppReady = false;
+let whatsappClient = null;
 
 // Configuração do servidor Express
 app.use(express.static(path.join(__dirname)));
@@ -45,22 +45,36 @@ app.get('/api/status', (req, res) => {
     }
 });
 
+// Rota para reiniciar o cliente do WhatsApp
+app.post('/api/restart', async (req, res) => {
+    try {
+        if (whatsappClient) {
+            await whatsappClient.destroy();
+        }
+        lastQRCode = null;
+        isWhatsAppReady = false;
+        initializeWhatsApp();
+        res.json({ status: 'restarting' });
+    } catch (error) {
+        console.error('Erro ao reiniciar:', error);
+        res.status(500).json({ error: 'Erro ao reiniciar o cliente' });
+    }
+});
+
 // Função para obter as opções do puppeteer baseado no ambiente
-async function getPuppeteerOptions() {
-    if (process.env.NODE_ENV === 'production') {
+function getPuppeteerConfig() {
+    const browserlessToken = process.env.BROWSERLESS_TOKEN;
+    
+    if (process.env.NODE_ENV === 'production' && browserlessToken) {
+        console.log('Usando configuração do Browserless.io');
         return {
             puppeteer: {
-                executablePath: await chromium.executablePath,
-                args: [
-                    ...chromium.args,
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                ],
-                defaultViewport: chromium.defaultViewport,
-                headless: chromium.headless,
+                browserWSEndpoint: `wss://chrome.browserless.io?token=${browserlessToken}`,
+                args: ['--no-sandbox']
             }
         };
     } else {
+        console.log('Usando configuração local');
         return {
             puppeteer: {
                 args: [
@@ -81,35 +95,36 @@ async function getPuppeteerOptions() {
 // Inicializa o cliente do WhatsApp
 async function initializeWhatsApp() {
     try {
-        const options = await getPuppeteerOptions();
-        const client = new Client(options);
+        const options = getPuppeteerConfig();
+        console.log('Iniciando cliente do WhatsApp com as opções:', JSON.stringify(options, null, 2));
+        
+        whatsappClient = new Client(options);
 
-        // Gera o QR Code para autenticação
-        client.on('qr', async (qr) => {
-            console.log('QR Code gerado. Escaneie-o com seu WhatsApp:');
-            
+        whatsappClient.on('qr', async (qr) => {
+            console.log('Novo QR Code gerado');
             try {
-                // Gera o QR code como uma string de dados URL
                 lastQRCode = await qrcode.toDataURL(qr);
-                console.log('QR Code atualizado');
+                console.log('QR Code convertido para DataURL');
             } catch (error) {
                 console.error('Erro ao gerar QR code:', error);
             }
         });
 
-        // Quando o cliente estiver pronto
-        client.on('ready', () => {
+        whatsappClient.on('ready', () => {
             console.log('Cliente WhatsApp conectado!');
             isWhatsAppReady = true;
             lastQRCode = null;
         });
 
-        // Manipula as mensagens recebidas
-        client.on('message', async (message) => {
+        whatsappClient.on('disconnected', () => {
+            console.log('Cliente WhatsApp desconectado');
+            isWhatsAppReady = false;
+        });
+
+        whatsappClient.on('message', async (message) => {
             let tempFilePath = null;
             
             try {
-                // Verifica se a mensagem contém mídia e é uma imagem
                 if (message.hasMedia) {
                     const media = await message.downloadMedia();
                     
@@ -124,46 +139,36 @@ async function initializeWhatsApp() {
 
                     await message.reply('Processando sua imagem... 🔄');
 
-                    // Converte o base64 da imagem em buffer
                     const imageBuffer = Buffer.from(media.data, 'base64');
-                    
                     console.log('Convertendo imagem para PDF...');
                     
-                    // Converte a imagem para PDF
                     const pdfBuffer = await convertImageToPDF(imageBuffer);
-                    
-                    // Salva o PDF temporariamente
                     tempFilePath = await saveTempFile(pdfBuffer, '.pdf');
-                    
-                    // Lê o arquivo como base64
                     const pdfBase64 = (await fs.readFile(tempFilePath)).toString('base64');
 
-                    // Cria o arquivo de mídia para enviar
                     const pdfMedia = new MessageMedia(
                         'application/pdf',
                         pdfBase64,
                         'documento.pdf'
                     );
 
-                    // Envia o PDF de volta para o usuário
                     await message.reply(pdfMedia);
                     await message.reply('Aqui está seu PDF! 📄');
                 }
             } catch (error) {
                 console.error('Erro ao processar mensagem:', error);
-                await message.reply('Desculpe, ocorreu um erro ao processar sua imagem. Por favor, tente enviar novamente.');
+                await message.reply('Desculpe, ocorreu um erro ao processar sua imagem. Por favor, tente novamente.');
             } finally {
-                // Limpa o arquivo temporário se ele existir
                 if (tempFilePath) {
                     await cleanupTempFile(tempFilePath);
                 }
             }
         });
 
-        // Inicia o cliente
-        await client.initialize();
+        console.log('Iniciando cliente do WhatsApp...');
+        await whatsappClient.initialize();
+        console.log('Cliente do WhatsApp inicializado com sucesso');
         
-        return client;
     } catch (error) {
         console.error('Erro ao inicializar WhatsApp:', error);
         throw error;
